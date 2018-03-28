@@ -16,8 +16,6 @@ import rimraf from 'rimraf';
 import stream from 'stream';
 import JSONStream from 'JSONStream';
 
-
-
 var DockerUtil = {
   host: null,
   client: null,
@@ -28,7 +26,7 @@ var DockerUtil = {
   localImages: null,
   imagesUsed: [],
 
-  setup (ip, name) {
+  setup(ip, name) {
     if (!ip && !name) {
       throw new Error('Falsy ip or name passed to docker client setup');
     }
@@ -37,9 +35,9 @@ var DockerUtil = {
     if (ip.indexOf('local') !== -1) {
       try {
         if (util.isWindows()) {
-          this.client = new dockerode({socketPath: '//./pipe/docker_engine'});
+          this.client = new dockerode({ socketPath: '//./pipe/docker_engine' });
         } else {
-          this.client = new dockerode({socketPath: '/var/run/docker.sock'});
+          this.client = new dockerode({ socketPath: '/var/run/docker.sock' });
         }
       } catch (error) {
         throw new Error('Cannot connect to the Docker daemon. Is the daemon running?');
@@ -61,13 +59,13 @@ var DockerUtil = {
     }
   },
 
-  async version () {
+  async version() {
     let version = null;
     let maxRetries = 10;
     let retries = 0;
     let error_message = "";
     while (version == null && retries < maxRetries) {
-      this.client.version((error,data) => {
+      this.client.version((error, data) => {
         if (!error) {
           version = data.Version;
         } else {
@@ -78,12 +76,12 @@ var DockerUtil = {
       await Promise.delay(500);
     }
     if (version == null) {
-       throw new Error(error_message);
+      throw new Error(error_message);
     }
     return version;
   },
 
-  init () {
+  init() {
     this.placeholders = JSON.parse(localStorage.getItem('placeholders')) || {};
     this.refresh();
     this.listen();
@@ -91,16 +89,16 @@ var DockerUtil = {
 
     // Resume pulling containers that were previously being pulled
     _.each(_.values(this.placeholders), container => {
-      containerServerActions.added({container});
+      containerServerActions.added({ container });
 
       this.client.pull(container.Config.Image, (error, stream) => {
         if (error) {
-          containerServerActions.error({name: container.Name, error});
+          containerServerActions.error({ name: container.Name, error });
           return;
         }
 
         stream.setEncoding('utf8');
-        stream.on('data', function () {});
+        stream.on('data', function () { });
         stream.on('end', () => {
           if (!this.placeholders[container.Name]) {
             return;
@@ -108,13 +106,13 @@ var DockerUtil = {
 
           delete this.placeholders[container.Name];
           localStorage.setItem('placeholders', JSON.stringify(this.placeholders));
-          this.createContainer(container.Name, {Image: container.Config.Image});
+          this.createContainer(container.Name, { Image: container.Config.Image });
         });
       });
     });
   },
 
-  isDockerRunning () {
+  isDockerRunning() {
     try {
       child_process.execSync('ps ax | grep "docker daemon" | grep -v grep');
     } catch (error) {
@@ -122,21 +120,21 @@ var DockerUtil = {
     }
   },
 
-  startContainer (name) {
+  startContainer(name) {
     let container = this.client.getContainer(name);
 
     container.start((error) => {
       if (error) {
-        containerServerActions.error({name, error});
+        containerServerActions.error({ name, error });
         console.log('error starting: %o - %o', name, error);
         return;
       }
-      containerServerActions.started({name, error});
+      containerServerActions.started({ name, error });
       this.fetchContainer(name);
     });
   },
 
-  createContainer (name, containerData) {
+  createContainer(name, containerData) {
     containerData.name = containerData.Name || name;
 
     if (containerData.Config && containerData.Config.Image) {
@@ -151,11 +149,11 @@ var DockerUtil = {
       containerData.Env = containerData.Config.Env;
     }
 
-    containerData.Volumes = _.mapObject(containerData.Volumes, () => {});
+    containerData.Volumes = _.mapObject(containerData.Volumes, () => { });
 
     this.client.getImage(containerData.Image).inspect((error, image) => {
       if (error) {
-        containerServerActions.error({name, error});
+        containerServerActions.error({ name, error });
         return;
       }
 
@@ -172,7 +170,7 @@ var DockerUtil = {
         networks = _.keys(containerData.NetworkSettings.Networks);
         if (networks.length) {
           let networkName = networks.shift();
-          EndpointsConfig[networkName] = _.extend(containerData.NetworkSettings.Networks[networkName], {Aliases: []});
+          EndpointsConfig[networkName] = _.extend(containerData.NetworkSettings.Networks[networkName], { Aliases: [] });
         }
         containerData.NetworkingConfig = {
           EndpointsConfig
@@ -194,7 +192,7 @@ var DockerUtil = {
           this.client.createContainer(containerData, (error) => {
             if (error) {
               console.error(err);
-              containerServerActions.error({name, error});
+              containerServerActions.error({ name, error });
               return;
             }
             metrics.track('Container Finished Creating');
@@ -209,29 +207,95 @@ var DockerUtil = {
       });
     });
   },
+  dockerizeContainer(name) {
+    return new Promise((resolve, reject) => {
+      this.client.getContainer(name).inspect((err, data) => {
+        metrics.track('Creating Dockerfile from container');
+        let dockerFile = 'something is not right';
+        if (!err) {
+          dockerFile = '';
+          // add image
+          dockerFile = dockerFile.concat(`FROM\t${data.Config.Image} \n\n`);
+          // set working dir
+          if (data.Config.WorkingDir) {
+            dockerFile = dockerFile.concat(`WORKDIR\t${data.Config.WorkingDir} \n\n`);
+          }
+          // add labels
+          if (data.Config.Labels){
+            let labels = ' LABEL';
+            _.each(data.Config.Labels, (v, k) => {
+              if (_.keys(data.Config.Labels).indexOf(k) < _.keys(data.Config.Labels).length - 1) {
+                labels = labels.concat(`\t${k}=${v} \\\n`);
+              } else {
+                labels = labels.concat(`\t${k}=${v} \n\n`);
+              }
+            });
+            dockerFile = dockerFile.concat(labels);
+          }
+          // expose ports
+          if (data.Config.ExposedPorts) {
+            _.each(_.keys(data.Config.ExposedPorts), port => {
+              dockerFile = dockerFile.concat(`EXPOSE\t${port} \n`)
+            });
+            dockerFile = dockerFile.concat('\n\n');
+          }
+          // expose available volumes
+          if (data.Mounts) {
+            let vols = [];
+            _.each(data.Mounts, (bind) => {
+              vols.push(bind.Destination);
+            });
+            dockerFile = dockerFile.concat(`VOLUME\t${JSON.stringify(vols)} \n\n`);
+          }
+          // add env variables
+          if (data.Config.Env) {
+            let vars = 'ENV';
+            _.each(data.Config.Env, env => {
+              if (data.Config.Env.indexOf(env) < data.Config.Env.length - 1) {
+                vars = vars.concat(`\t${env} \\\n`);
+              } else {
+                vars = vars.concat(`\t${env} \n\n`);
+              }
+            });
+            dockerFile = dockerFile.concat(vars);
+          }
+          // add cmd
+          if (data.Config.Cmd) {
+            dockerFile = dockerFile.concat(`CMD\t${JSON.stringify(data.Config.Cmd)}\n\n`);
+          }
+          // add entry point 
+          dockerFile = dockerFile.concat(`ENTRYPOINT\t${JSON.stringify(data.Config.Entrypoint)} \n\n`);
+          console.log(dockerFile)
+          resolve(dockerFile);
+        } else {
+          reject(err);
+        }
+      });
+    });
+  },
 
-  fetchContainer (id) {
+  fetchContainer(id) {
     this.client.getContainer(id).inspect((error, container) => {
       if (error) {
-        containerServerActions.error({name: id, error});
+        containerServerActions.error({ name: id, error });
       } else {
         container.Name = container.Name.replace('/', '');
         this.client.getImage(container.Image).inspect((error, image) => {
           if (error) {
-            containerServerActions.error({name, error});
+            containerServerActions.error({ name, error });
             return;
           }
           container.InitialPorts = image.Config.ExposedPorts;
         });
 
-        containerServerActions.updated({container});
+        containerServerActions.updated({ container });
         networkActions.clearPending();
       }
     });
   },
 
-  fetchAllContainers () {
-    this.client.listContainers({all: true}, (err, containers) => {
+  fetchAllContainers() {
+    this.client.listContainers({ all: true }, (err, containers) => {
       if (err) {
         console.error(err);
         return;
@@ -250,7 +314,7 @@ var DockerUtil = {
           container.Name = container.Name.replace('/', '');
           this.client.getImage(container.Image).inspect((error, image) => {
             if (error) {
-              containerServerActions.error({name, error});
+              containerServerActions.error({ name, error });
               return;
             }
             container.InitialPorts = image.Config.ExposedPorts;
@@ -264,16 +328,16 @@ var DockerUtil = {
           console.error(err);
           return;
         }
-        containerServerActions.allUpdated({containers: _.indexBy(containers.concat(_.values(this.placeholders)), 'Name')});
+        containerServerActions.allUpdated({ containers: _.indexBy(containers.concat(_.values(this.placeholders)), 'Name') });
         let favorites = JSON.parse(localStorage.getItem('containers.favorites')) || [];
-        favorites.forEach(name => containerServerActions.toggleFavorite({name}));
+        favorites.forEach(name => containerServerActions.toggleFavorite({ name }));
         this.logs();
         this.fetchAllImages();
       });
     });
   },
 
-  fetchAllImages () {
+  fetchAllImages() {
     this.client.listImages((err, list) => {
       if (err) {
         imageServerActions.error(err);
@@ -292,8 +356,8 @@ var DockerUtil = {
             imageSplit = image.RepoDigests[0].split('@');
           }
           let repo = imageSplit[0];
-          if(imageSplit.length > 2) {
-            repo = imageSplit[0]+':'+imageSplit[1];
+          if (imageSplit.length > 2) {
+            repo = imageSplit[0] + ':' + imageSplit[1];
           }
           if (repo.indexOf('/') === -1) {
             repo = 'local/' + repo;
@@ -306,7 +370,7 @@ var DockerUtil = {
     });
   },
 
-  fetchAllNetworks () {
+  fetchAllNetworks() {
     this.client.listNetworks((err, networks) => {
       if (err) {
         networkActions.error(err)
@@ -361,7 +425,7 @@ var DockerUtil = {
     return Promise.all(promises);
   },
 
-  removeImage (selectedRepoTag) {
+  removeImage(selectedRepoTag) {
     // Prune all dangling image first
     this.localImages.some((image) => {
       if (image.namespace == "<none>" && image.name == "<none>") {
@@ -370,7 +434,7 @@ var DockerUtil = {
       if (image.RepoTags) {
         image.RepoTags.map(repoTag => {
           if (repoTag === selectedRepoTag) {
-            this.client.getImage(selectedRepoTag).remove({'force': true}, (err, data) => {
+            this.client.getImage(selectedRepoTag).remove({ 'force': true }, (err, data) => {
               if (err) {
                 console.error(err);
                 imageServerActions.error(err);
@@ -386,7 +450,7 @@ var DockerUtil = {
     });
   },
 
-  run (name, repository, tag, network, local = false) {
+  run(name, repository, tag, network, local = false) {
     tag = tag || 'latest';
     let imageName = repository + ':' + tag;
 
@@ -403,7 +467,7 @@ var DockerUtil = {
         Downloading: true
       }
     };
-    containerServerActions.added({container: placeholderData});
+    containerServerActions.added({ container: placeholderData });
 
     this.placeholders[name] = placeholderData;
     localStorage.setItem('placeholders', JSON.stringify(this.placeholders));
@@ -422,7 +486,7 @@ var DockerUtil = {
     } else {
       this.pullImage(repository, tag, error => {
         if (error) {
-          containerServerActions.error({name, error});
+          containerServerActions.error({ name, error });
           this.refresh();
           return;
         }
@@ -434,24 +498,24 @@ var DockerUtil = {
         this.createContainer(name, containerData);
       },
 
-      // progress is actually the progression PER LAYER (combined in columns)
-      // not total because it's not accurate enough
-      progress => {
-        containerServerActions.progress({name, progress});
-      },
+        // progress is actually the progression PER LAYER (combined in columns)
+        // not total because it's not accurate enough
+        progress => {
+          containerServerActions.progress({ name, progress });
+        },
 
 
-      () => {
-        containerServerActions.waiting({name, waiting: true});
-      });
+        () => {
+          containerServerActions.waiting({ name, waiting: true });
+        });
     }
   },
 
-  updateContainer (name, data) {
+  updateContainer(name, data) {
     let existing = this.client.getContainer(name);
     existing.inspect((error, existingData) => {
       if (error) {
-        containerServerActions.error({name, error});
+        containerServerActions.error({ name, error });
         this.refresh();
         return;
       }
@@ -476,10 +540,10 @@ var DockerUtil = {
     });
   },
 
-  rename (name, newName) {
-    this.client.getContainer(name).rename({name: newName}, error => {
+  rename(name, newName) {
+    this.client.getContainer(name).rename({ name: newName }, error => {
       if (error && error.statusCode !== 204) {
-        containerServerActions.error({name, error});
+        containerServerActions.error({ name, error });
         return;
       }
       var oldPath = util.windowsToLinuxPath(path.join(util.home(), util.documents(), 'Kitematic', name));
@@ -488,7 +552,7 @@ var DockerUtil = {
       this.client.getContainer(newName).inspect((error, container) => {
         if (error) {
           // TODO: handle error
-          containerServerActions.error({newName, error});
+          containerServerActions.error({ newName, error });
           this.refresh();
         }
         rimraf(newPath, () => {
@@ -500,23 +564,23 @@ var DockerUtil = {
             m.Source = m.Source.replace(oldPath, newPath);
           });
 
-          this.updateContainer(newName, {Mounts: container.Mounts});
-          rimraf(oldPath, () => {});
+          this.updateContainer(newName, { Mounts: container.Mounts });
+          rimraf(oldPath, () => { });
         });
       });
     });
   },
 
-  restart (name) {
-    this.client.getContainer(name).stop({t: 5}, stopError => {
+  restart(name) {
+    this.client.getContainer(name).stop({ t: 5 }, stopError => {
       if (stopError && stopError.statusCode !== 304) {
-        containerServerActions.error({name, stopError});
+        containerServerActions.error({ name, stopError });
         this.refresh();
         return;
       }
       this.client.getContainer(name).start(startError => {
         if (startError && startError.statusCode !== 304) {
-          containerServerActions.error({name, startError});
+          containerServerActions.error({ name, startError });
           this.refresh();
           return;
         }
@@ -525,10 +589,10 @@ var DockerUtil = {
     });
   },
 
-  stop (name) {
-    this.client.getContainer(name).stop({t: 5}, error => {
+  stop(name) {
+    this.client.getContainer(name).stop({ t: 5 }, error => {
       if (error && error.statusCode !== 304) {
-        containerServerActions.error({name, error});
+        containerServerActions.error({ name, error });
         this.refresh();
         return;
       }
@@ -536,44 +600,44 @@ var DockerUtil = {
     });
   },
 
-  start (name, callback) {
+  start(name, callback) {
     var self = this;
     this.client.getContainer(name).inspect((error, container) => {
       if (error) {
-        containerServerActions.error({name: name, error});
-        if(callback) callback(error);
+        containerServerActions.error({ name: name, error });
+        if (callback) callback(error);
       } else {
-        if(container.HostConfig
+        if (container.HostConfig
           && container.HostConfig.Links
           && container.HostConfig.Links.length > 0
           && localStorage.getItem('settings.startLinkedContainers') === 'true'
-        ){
-          self.startLinkedContainers(name, function(error){
-            if(error){
-              containerServerActions.error({name: name, error});
-              if(callback) callback(error);
-            }else{
+        ) {
+          self.startLinkedContainers(name, function (error) {
+            if (error) {
+              containerServerActions.error({ name: name, error });
+              if (callback) callback(error);
+            } else {
               self.client.getContainer(name).start(error => {
                 if (error && error.statusCode !== 304) {
-                  containerServerActions.error({name, error});
+                  containerServerActions.error({ name, error });
                   this.refresh();
                   return;
-                }else{
+                } else {
                   self.fetchContainer(name);
-                  if(callback) callback(null);
+                  if (callback) callback(null);
                 }
               });
             }
           })
-        }else{
+        } else {
           self.client.getContainer(name).start(error => {
             if (error && error.statusCode !== 304) {
-              containerServerActions.error({name, error});
+              containerServerActions.error({ name, error });
               this.refresh();
               return;
-            }else{
+            } else {
               self.fetchContainer(name);
-              if(callback) callback(null);
+              if (callback) callback(null);
             }
           });
         }
@@ -581,56 +645,56 @@ var DockerUtil = {
     })
   },
 
-  startLinkedContainers (name, callback){
+  startLinkedContainers(name, callback) {
     var self = this;
 
     this.client.getContainer(name).inspect((error, container) => {
       if (error) {
-        containerServerActions.error({name: name, error});
-        if(callback) callback(error);
+        containerServerActions.error({ name: name, error });
+        if (callback) callback(error);
       } else {
         var links = _.map(container.HostConfig.Links, (link, key) => {
           return link.split(":")[0].split("/")[1];
         });
 
-        async.map(links, function(link, cb){
+        async.map(links, function (link, cb) {
           var linkedContainer = self.client.getContainer(link);
-          if(linkedContainer){
+          if (linkedContainer) {
             linkedContainer.inspect((error, linkedContainerInfo) => {
               if (error) {
-                containerServerActions.error({name: name, error});
+                containerServerActions.error({ name: name, error });
                 cb(error);
               } else {
-                if(linkedContainerInfo.State.Stopping
+                if (linkedContainerInfo.State.Stopping
                   || linkedContainerInfo.State.Downloading
                   || linkedContainerInfo.State.ExitCode
                   || !linkedContainerInfo.State.Running
                   || linkedContainerInfo.State.Updating
-                ){
-                  self.start(linkedContainerInfo.Id, function(error){
+                ) {
+                  self.start(linkedContainerInfo.Id, function (error) {
                     if (error) {
-                      containerServerActions.error({name: name, error});
+                      containerServerActions.error({ name: name, error });
                       cb(error);
-                    }else{
+                    } else {
                       self.fetchContainer(linkedContainerInfo.Id);
                       cb(null);
                     }
                   });
-                }else{
+                } else {
                   cb(null);
                 }
               }
             });
-          }else{
-            cb("linked container "+link+" not found");
+          } else {
+            cb("linked container " + link + " not found");
           }
-        }, function(error, containers) {
-          if(error){
-            containerServerActions.error({name, error});
-            if(callback) callback(error);
+        }, function (error, containers) {
+          if (error) {
+            containerServerActions.error({ name, error });
+            if (callback) callback(error);
             return;
-          }else{
-            if(callback) callback(null);
+          } else {
+            if (callback) callback(null);
             return;
           }
         });
@@ -638,9 +702,9 @@ var DockerUtil = {
     });
   },
 
-  destroy (name) {
+  destroy(name) {
     if (this.placeholders[name]) {
-      containerServerActions.destroyed({id: name});
+      containerServerActions.destroyed({ id: name });
       delete this.placeholders[name];
       localStorage.setItem('placeholders', JSON.stringify(this.placeholders));
       this.refresh();
@@ -648,18 +712,18 @@ var DockerUtil = {
     }
 
     let container = this.client.getContainer(name);
-    container.unpause( () => {
-      container.kill( () => {
-        container.remove( (error) => {
+    container.unpause(() => {
+      container.kill(() => {
+        container.remove((error) => {
           if (error) {
-            containerServerActions.error({name, error});
+            containerServerActions.error({ name, error });
             this.refresh();
             return;
           }
-          containerServerActions.destroyed({id: name});
+          containerServerActions.destroyed({ id: name });
           var volumePath = path.join(util.home(), 'Kitematic', name);
           if (fs.existsSync(volumePath)) {
-            rimraf(volumePath, () => {});
+            rimraf(volumePath, () => { });
           }
           this.refresh();
         });
@@ -667,7 +731,7 @@ var DockerUtil = {
     });
   },
 
-  active (name) {
+  active(name) {
     this.detachLog();
     this.activeContainerName = name;
 
@@ -676,7 +740,7 @@ var DockerUtil = {
     }
   },
 
-  logs () {
+  logs() {
     if (!this.activeContainerName) {
       return;
     }
@@ -691,7 +755,7 @@ var DockerUtil = {
       if (err) {
         // socket hang up can be captured
         console.error(err);
-        containerServerActions.error({name: this.activeContainerName, err});
+        containerServerActions.error({ name: this.activeContainerName, err });
         return;
       }
 
@@ -699,13 +763,13 @@ var DockerUtil = {
       logStream.setEncoding('utf8');
       logStream.on('data', chunk => logs += chunk);
       logStream.on('end', () => {
-        containerServerActions.logs({name: this.activeContainerName, logs});
+        containerServerActions.logs({ name: this.activeContainerName, logs });
         this.attach();
       });
     });
   },
 
-  attach () {
+  attach() {
     if (!this.activeContainerName) {
       return;
     }
@@ -733,7 +797,7 @@ var DockerUtil = {
         batch += chunk;
         if (!timeout) {
           timeout = setTimeout(() => {
-            containerServerActions.log({name: this.activeContainerName, entry: batch});
+            containerServerActions.log({ name: this.activeContainerName, entry: batch });
             timeout = null;
             batch = '';
           }, 16);
@@ -756,7 +820,7 @@ var DockerUtil = {
   },
 
 
-  listen () {
+  listen() {
     this.detachEvent()
     this.client.getEvents((error, stream) => {
       if (error || !stream) {
@@ -774,13 +838,13 @@ var DockerUtil = {
         }
 
         if (data.status === 'destroy') {
-          containerServerActions.destroyed({id: data.id});
+          containerServerActions.destroyed({ id: data.id });
           this.detachLog()
         } else if (data.status === 'kill') {
-          containerServerActions.kill({id: data.id});
+          containerServerActions.kill({ id: data.id });
           this.detachLog()
         } else if (data.status === 'stop') {
-          containerServerActions.stopped({id: data.id});
+          containerServerActions.stopped({ id: data.id });
           this.detachLog()
         } else if (data.status === 'create') {
           this.logs();
@@ -808,7 +872,7 @@ var DockerUtil = {
     });
   },
 
-  pullImage (repository, tag, callback, progressCallback, blockedCallback) {
+  pullImage(repository, tag, callback, progressCallback, blockedCallback) {
     let opts = {}, config = hubUtil.config();
     if (!hubUtil.config()) {
       opts = {};
@@ -870,7 +934,7 @@ var DockerUtil = {
               if (i < leftOverLayers) {
                 layerAmount += 1;
               }
-              columns.progress[i] = {layerIDs: [], nbLayers: 0, maxLayers: layerAmount, value: 0.0};
+              columns.progress[i] = { layerIDs: [], nbLayers: 0, maxLayers: layerAmount, value: 0.0 };
             }
           }
 
@@ -924,7 +988,7 @@ var DockerUtil = {
     });
   },
 
-  refresh () {
+  refresh() {
     this.fetchAllContainers();
   }
 };

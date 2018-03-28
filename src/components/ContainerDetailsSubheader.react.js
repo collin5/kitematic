@@ -6,6 +6,7 @@ import ContainerUtil from '../utils/ContainerUtil';
 import classNames from 'classnames';
 import containerActions from '../actions/ContainerActions';
 import dockerMachineUtil from '../utils/DockerMachineUtil';
+import dockerUtil from '../utils/DockerUtil';
 
 var ContainerDetailsSubheader = React.createClass({
   contextTypes: {
@@ -112,6 +113,9 @@ var ContainerDetailsSubheader = React.createClass({
       dockerMachineUtil.dockerTerminal(`docker exec -it ${this.props.container.Name} ${shell}`);
     }
   },
+  handleViewDockerfile: async function () {
+    let dockerFile = await dockerUtil.dockerizeContainer(this.props.container.Name);
+  },
   render: function () {
     var restartActionClass = classNames({
       action: true,
@@ -179,6 +183,10 @@ var ContainerDetailsSubheader = React.createClass({
           <div className={docsActionClass}>
             <div className="action-icon" onClick={this.handleDocs}><span className="icon icon-open-external"></span></div>
             <div className="btn-label">DOCS</div>
+          </div>
+          <div className={docsActionClass}>
+            <div className="action-icon" onClick={this.handleViewDockerfile}><span className="icon icon-docker-cli"></span></div>
+            <div className="btn-label">DOCKERFILE</div>
           </div>
         </div>
         <div className="details-subheader-tabs">
